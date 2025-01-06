@@ -85,6 +85,7 @@ fn cli_get_stored() -> Result<()> {
         .assert()
         .success()
         .stdout(eq("value2").trim());
+    temp_dir.close()?;
 
     Ok(())
 }

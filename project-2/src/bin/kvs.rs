@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use kvs::Result;
+use kvs::{KvStore, Result};
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -20,20 +20,30 @@ fn main() -> Result<()> {
 
     match &cli.command {
         Some(Commands::Set { key, value }) => {
-            eprintln!("unimplemented");
-            std::process::exit(1);
+            let mut storage = KvStore::open(".")?;
+            storage.set(key.clone(), value.clone())?;
+            Ok(())
         }
         Some(Commands::Get { key }) => {
-            eprintln!("unimplemented");
-            std::process::exit(1);
+            let storage = KvStore::open(".")?;
+            match storage.get(key.clone())? {
+                Some(value) => println!("{}", value),
+                None => println!("Key not found"),
+            }
+            Ok(())
         }
         Some(Commands::Rm { key }) => {
-            eprintln!("unimplemented");
-            std::process::exit(1);
+            let mut storage = KvStore::open(".")?;
+            match storage.remove(key.clone()) {
+                Ok(_) => Ok(()),
+                Err(e) => {
+                    println!("{}", e);
+                    Err(e)
+                }
+            }
         }
         None => {
             std::process::exit(1);
         }
     }
-    unimplemented!()
 }
