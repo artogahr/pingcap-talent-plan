@@ -9,6 +9,10 @@ pub enum CustomError {
     KeyNotFound,
     #[error("Serde error")]
     Serde(#[from] serde_json::Error),
+    #[error("Bincode error")]
+    Bincode(#[from] bincode::Error),
+    #[error("Box<ErrorKind>")]
+    BoxedError(#[from] Box<dyn std::error::Error>),
 }
 
 /// Type alias

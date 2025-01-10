@@ -1,13 +1,9 @@
 //! # KvStore
 //! Simple Key Value Store
 #![deny(missing_docs)]
-use clap::Error;
 use error::CustomError;
-use serde::ser;
 use serde::{Deserialize, Serialize};
-use serde_json;
-use std::hash::Hash;
-use std::io::BufRead;
+use std::io::BufReader;
 use std::{collections::HashMap, fs::File, io::Write};
 mod error;
 pub use error::Result;
@@ -33,7 +29,7 @@ enum Transaction {
 impl KvStore {
     /// Open a Key Value Store from a file
     pub fn open<F: AsRef<std::path::Path>>(path: F) -> Result<KvStore> {
-        let path = path.as_ref().join("storage.json");
+        let path = path.as_ref().join("storage.bincode");
         //dbg!(path.to_str());
         let file = std::fs::OpenOptions::new()
             .read(true)
@@ -42,16 +38,25 @@ impl KvStore {
             .open(path)?;
         //dbg!(&file);
         let mut storage: HashMap<String, String> = HashMap::new();
-        for line in std::io::BufReader::new(&file).lines() {
-            let line = line?;
-            // dbg!(&line);
-            let transaction: Transaction = serde_json::from_str(&line)?;
-            match transaction {
-                Transaction::Set(key, value) => {
-                    storage.insert(key, value);
-                }
-                Transaction::Remove(key) => {
-                    storage.remove(&key);
+        let mut reader = BufReader::new(&file);
+
+        loop {
+            match bincode::deserialize_from::<_, Transaction>(&mut reader) {
+                Ok(transaction) => match transaction {
+                    Transaction::Set(key, value) => {
+                        storage.insert(key, value);
+                    }
+                    Transaction::Remove(key) => {
+                        storage.remove(&key);
+                    }
+                },
+                Err(e) => {
+                    if e.to_string().contains("EOF")
+                        || e.to_string().contains("failed to fill whole buffer")
+                    {
+                        break;
+                    }
+                    return Err(e.into());
                 }
             }
         }
@@ -62,9 +67,9 @@ impl KvStore {
     pub fn set(&mut self, key: String, value: String) -> Result<()> {
         self.storage.insert(key.clone(), value.clone());
         let transaction = Transaction::Set(key, value);
-        let serialized = serde_json::to_string(&transaction)? + "\n";
+        let serialized = bincode::serialize(&transaction)?;
         // dbg!(&serialized);
-        self.file.write_all(serialized.as_bytes())?;
+        self.file.write_all(&serialized)?;
         Ok(())
     }
 
@@ -83,9 +88,9 @@ impl KvStore {
         }
         self.storage.remove(&key);
         let transaction = Transaction::Remove(key);
-        let serialized = serde_json::to_string(&transaction)? + "\n";
+        let serialized = bincode::serialize(&transaction)?;
         // dbg!(&serialized);
-        self.file.write_all(serialized.as_bytes())?;
+        self.file.write_all(&serialized)?;
         Ok(())
     }
 }
