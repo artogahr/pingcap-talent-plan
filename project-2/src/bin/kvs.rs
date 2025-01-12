@@ -20,7 +20,7 @@ fn main() -> Result<()> {
 
     match &cli.command {
         Some(Commands::Set { key, value }) => {
-            let mut storage = KvStore::open(".")?;
+            let mut storage = KvStore::open(std::env::current_dir()?)?;
             storage.set(key.clone(), value.clone())?;
             Ok(())
         }
