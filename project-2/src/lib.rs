@@ -5,11 +5,13 @@ use core::panic;
 use error::CustomError;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, OpenOptions};
+use std::fs::{self, remove_file, OpenOptions};
 use std::io::{BufReader, Seek, SeekFrom};
 use std::path::PathBuf;
 mod error;
 pub use error::Result;
+
+const MAX_EXPIRED_KEYS_PER_FILE: u32 = 20;
 
 /// The basic implementation of the Key Value Store thingy, which uses a HashMap underneath
 /// # Examples
@@ -29,10 +31,19 @@ pub struct KvStore {
     files: BTreeMap<u32, u32>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 enum Transaction {
     Set(String, String),
     Remove(String),
+}
+
+impl Transaction {
+    fn key(&self) -> &String {
+        match self {
+            Transaction::Set(key, _) => key,
+            Transaction::Remove(key) => key,
+        }
+    }
 }
 
 impl KvStore {
@@ -64,7 +75,7 @@ impl KvStore {
                     file_indexes.insert(file_index);
                 } else {
                     // Log a warning for invalid file names (optional)
-                    eprintln!("Warning: Skipping file with invalid index: {:?}", path);
+                    //eprintln!("Warning: Skipping file with invalid index: {:?}", path);
                 }
             }
         }
@@ -142,9 +153,10 @@ impl KvStore {
             .unwrap_or(0);
 
         // If the file is too large, create a new file
-        let (file_index, file_path) = if file_size >= 1000 {
+        let (file_index, file_path) = if file_size >= 1024 * 1024 {
             let new_file_index = active_file_index + 1;
             let new_file_path = self.folder_path.join(format!("{}.bin", new_file_index));
+            self.compact()?;
             (new_file_index, new_file_path)
         } else {
             (active_file_index, active_file_path)
@@ -247,6 +259,81 @@ impl KvStore {
         }
     }
 
+    /// Compact the storage by checking for files
+    /// that have a high number of expired logs.
+    /// If a file has more than MAX_EXPIRED_KEYS_PER_FILE keys
+    /// then we read the file, discard all logs that are expired
+    /// (ones that already have a value in the storage map that is not in the same file & index)
+    /// and write the remaining logs to a new file with the same index.
+    fn compact(&mut self) -> Result<()> {
+        //eprintln!("Compaction started");
+        for (file_index, expired_keys) in self.files.clone() {
+            //eprintln!("Compacting file {}", file_index);
+            if expired_keys < MAX_EXPIRED_KEYS_PER_FILE {
+                //eprintln!("Compaction not needed");
+                continue;
+            }
+            let mut temp_storage: Vec<Transaction> = Vec::new();
+            let file_path = self.folder_path.join(format!("{}.bin", file_index));
+            let file = OpenOptions::new().read(true).open(&file_path)?;
+            let mut reader = BufReader::new(&file);
+
+            loop {
+                let pos = reader.stream_position()?;
+                match bincode::deserialize_from::<_, Transaction>(&mut reader) {
+                    Ok(transaction) => match transaction {
+                        Transaction::Set(key, value) => {
+                            //eprintln!("Compaction: Set {:?} {:?}", key, value);
+                            // Check if the key already exists in storage
+                            if self.storage.contains_key(&key) {
+                                //eprintln!("Compaction: Key exists {:?}", key);
+                                if let Some(&(current_file_index, current_offset)) =
+                                    self.storage.get(&key)
+                                {
+                                    if current_file_index == file_index && current_offset == pos {
+                                        //eprintln!("Compaction: Key exists in same file");
+                                        temp_storage.push(Transaction::Set(key, value));
+                                    }
+                                }
+                            }
+                        }
+                        Transaction::Remove(_) => {
+                            //eprintln!("Compaction: Remove");
+                            continue;
+                        }
+                    },
+
+                    Err(e) => {
+                        if e.to_string().contains("EOF")
+                            || e.to_string().contains("failed to fill whole buffer")
+                        {
+                            break; // End of file
+                        } else {
+                            return Err(e.into()); // Propagate other errors
+                        }
+                    }
+                }
+            }
+            remove_file(&file_path)?;
+            //eprintln!("Finished reading transactions from file");
+            // Write the remaining transactions to a new file
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .append(false)
+                .open(&file_path)?;
+            for transaction in temp_storage {
+                //eprintln!("Writing transaction to file");
+                //eprintln!("Transaction: {:?}", transaction);
+                let pos = file.seek(SeekFrom::End(0))?;
+                bincode::serialize_into(&mut file, &transaction)?;
+                self.storage
+                    .insert(transaction.key().clone(), (file_index, pos));
+            }
+        }
+
+        Ok(())
+    }
     /// Get the next available file index.
     /// This is a simple implementation that increments the highest existing index.
     fn get_next_file_index(&self) -> u32 {
